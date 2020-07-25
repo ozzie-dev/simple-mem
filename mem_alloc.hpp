@@ -54,7 +54,7 @@ public:
     int segments() noexcept { return minfo.size(); }
     char* bbase() noexcept { return &arena[0]; }
     char* ebase() noexcept { return bbase() + len; }
-    const auto mem_info() const noexcept { return minfo; }
+    const auto& mem_info() const noexcept { return minfo; }
 
     static constexpr int len = 64; // 64 bytes
 private:
@@ -172,20 +172,36 @@ struct try_deref_ptr
 #define Ptr try_deref_ptr
 
 //------------------------ MEMORY ASSIGNMENT OPERATORS --------------------------
-#include <iostream>
+template<class T>
+concept nonref = (not std::is_reference_v<T>);
+template<nonref T>
+using ptr_to = std::conditional_t<std::is_array_v<T>, std::decay_t<T>, T*>;
 // operator «ins»
 template<class T, class... A>
-[[nodiscard]] auto ins(A&&... a)
+[[nodiscard]] auto ins(A&&... a) -> ptr_to<T>
 {
-    if(auto optr = static_cast<T*>(mem.alloc(sizeof (T)))){
-        std::construct_at(optr, std::forward<A>(a)...);
-        return optr;
+    if constexpr(std::is_array_v<T>)
+    {
+        using U = std::decay_t<T>;
+        if(auto optr = static_cast<U>(mem.alloc(sizeof (T)))){
+            ::new(static_cast<void*>(optr)) T{std::forward<A>(a)...};
+            return optr;
+        }
     }
+    else
+    {
+        if(auto optr = static_cast<T*>(mem.alloc(sizeof (T)))){
+            std::construct_at(optr, std::forward<A>(a)...);
+            return optr;
+        }
+    }
+
     throw exhausted_memory{
         "memory_exhausted: \n  disponible: " + std::to_string(mem.available()) +
         "\n  requerida: " + std::to_string(sizeof (T))
     };
 };
+
 
 // operator «del»
 struct del_oper
@@ -224,6 +240,21 @@ struct del_oper
 
 // operator 'del'
 #define del del_oper{},
+
+template<class T>
+struct my_allocator
+{
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+    using size_type = std::size_t;
+
+    my_allocator() noexcept = default;
+    value_type* allocate(size_t n){ return static_cast<value_type*>(mem.alloc(n)); }
+    void deallocate(void* p, [[maybe_unused]] size_t n)
+    { mem.dealloc(p); }
+
+    friend operator==(const my_allocator&, const my_allocator&){ return true; }
+};
 
 //--------------------------------------------------------------------------------
 #endif // MEM_ALLOC_HPP_INCLUDED
